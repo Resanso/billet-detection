@@ -1,0 +1,25 @@
+# Datasets
+Billet-Detection-2/
+dataset_esp32/
+
+# Model weights & exports
+*.pt
+*.pth
+*.weights
+*.onnx
+*.engine
+*.tflite
+*.torchscript
+
+# Training runs/outputs
+runs/
+
+# Python
+venv/
+__pycache__/
+*.pyc
+*.pyo
+.env
+
+# macOS
+.DS_Store
