@@ -14,6 +14,18 @@ dataset_esp32/
 # Training runs/outputs
 runs/
 
+# PyInstaller build output
+build/
+dist/
+*.spec.bak
+
+# Auto-downloaded binaries (cloudflared, dll)
+.bin/
+
+# App error/crash logs
+*.log
+billet_error.log
+
 # Python
 venv/
 __pycache__/

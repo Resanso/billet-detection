@@ -9,7 +9,22 @@ import time
 import queue
 import threading
 from pathlib import Path
+from typing import Optional
 from urllib.parse import urlparse
+
+# ── Fix Qt plugin path for PyInstaller bundle (must be before any Qt import) ──
+if getattr(sys, "frozen", False):
+    _meipass = getattr(sys, "_MEIPASS", "")
+    # In one-dir mode _MEIPASS = _internal/, in one-file mode it's a temp dir
+    _candidates = [
+        os.path.join(_meipass, "PySide6", "Qt", "plugins"),
+        os.path.join(os.path.dirname(sys.executable), "_internal", "PySide6", "Qt", "plugins"),
+    ]
+    for _p in _candidates:
+        if os.path.isdir(_p):
+            os.environ["QT_PLUGIN_PATH"]              = _p
+            os.environ["QT_QPA_PLATFORM_PLUGIN_PATH"] = os.path.join(_p, "platforms")
+            break
 import requests
 
 from PySide6.QtWidgets import (
@@ -19,8 +34,12 @@ from PySide6.QtWidgets import (
     QTextEdit, QSizePolicy, QFrame, QSpacerItem, QMessageBox, QComboBox,
     QFileDialog,
 )
-from PySide6.QtCore import Qt, QTimer, Signal, QObject, QThread
+from PySide6.QtCore import Qt, QTimer, Signal, QObject, QThread, QUrl
 from PySide6.QtGui import QImage, QPixmap, QFont, QColor, QPalette
+from PySide6.QtGui import QDesktopServices
+
+import web_server
+import tunnel
 
 STYLESHEET = """
 QMainWindow, QWidget#root { background: #1e1e2e; }
@@ -438,10 +457,13 @@ class MainWindow(QMainWindow):
         self.resize(1150, 720)
         self.setMinimumSize(850, 580)
         self.setStyleSheet(STYLESHEET)
-        self._worker: CameraWorker | None = None
+        self._worker: Optional[CameraWorker] = None
         self._img_count    = 0
-        self._class_counts: dict[str, int] = {}
+        self._class_counts: dict = {}
+        self._web_port     = 5000
+        self._tunnel_url: Optional[str] = None
         self._build_ui()
+        self._start_web_server()
 
     def _build_ui(self):
         central = QWidget(); central.setObjectName("root")
@@ -654,6 +676,50 @@ class MainWindow(QMainWindow):
         lbl.setObjectName("muted")
         self._stats_layout.addWidget(lbl)
         vbox.addWidget(grp_stats)
+
+        # ── Web Access ───────────────────────────────────────────────────────
+        grp_web = QGroupBox("🌐  Web Access")
+        vw = QVBoxLayout(grp_web)
+
+        # Local URL
+        vw.addWidget(QLabel("URL Lokal:"))
+        self.lbl_local_url = QLabel(f"http://localhost:{self._web_port}")
+        self.lbl_local_url.setStyleSheet(
+            "color:#5cb8e4; background:transparent; font-size:11px;")
+        self.lbl_local_url.setWordWrap(True)
+        vw.addWidget(self.lbl_local_url)
+
+        btn_open_local = QPushButton("🔗  Buka di Browser")
+        btn_open_local.setObjectName("btn_capture")
+        btn_open_local.clicked.connect(
+            lambda: QDesktopServices.openUrl(QUrl(f"http://localhost:{self._web_port}")))
+        vw.addWidget(btn_open_local)
+
+        # ngrok public tunnel
+        vw.addWidget(QLabel("ngrok Authtoken (opsional):"))
+        self.le_ngrok_token = QLineEdit()
+        self.le_ngrok_token.setPlaceholderText("Paste token dari dashboard.ngrok.com …")
+        self.le_ngrok_token.setEnabled(True)
+        self.le_ngrok_token.setReadOnly(False)
+        self.le_ngrok_token.setFocusPolicy(Qt.StrongFocus)
+        self.le_ngrok_token.setAttribute(Qt.WA_InputMethodEnabled, True)
+        vw.addWidget(self.le_ngrok_token)
+
+        self.btn_tunnel = QPushButton("📡  Buka Tunnel Publik")
+        self.btn_tunnel.setObjectName("btn_start")
+        self.btn_tunnel.clicked.connect(self._toggle_tunnel)
+        vw.addWidget(self.btn_tunnel)
+
+        self.lbl_tunnel_url = QLabel("(tunnel belum aktif)")
+        self.lbl_tunnel_url.setObjectName("muted")
+        self.lbl_tunnel_url.setWordWrap(True)
+        vw.addWidget(self.lbl_tunnel_url)
+
+        hint_web = QLabel("⚠️  Siapa pun dengan URL publik dapat melihat live stream.")
+        hint_web.setObjectName("muted")
+        hint_web.setWordWrap(True)
+        vw.addWidget(hint_web)
+        vbox.addWidget(grp_web)
 
         # Log
         grp_log = QGroupBox("Log")
@@ -871,6 +937,9 @@ class MainWindow(QMainWindow):
         ).start()
 
     def _on_frame(self, frame):
+        # Push to web clients (non-blocking)
+        web_server.push_frame(frame)
+
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         h, w, ch = rgb.shape
         qimg = QImage(rgb.data, w, h, w * ch, QImage.Format_RGB888)
@@ -886,6 +955,7 @@ class MainWindow(QMainWindow):
         self.fps_label.setText(f"FPS: {fps:.1f}")
 
     def _on_stats(self, counts: dict):
+        web_server.push_stats(counts)
         while self._stats_layout.count():
             item = self._stats_layout.takeAt(0)
             if item.widget():
@@ -967,8 +1037,55 @@ class MainWindow(QMainWindow):
             row.addWidget(lbl); row.addStretch(); row.addWidget(val)
             self._capture_stats_layout.addLayout(row)
 
+    def _start_web_server(self):
+        """Start Flask server on a free port and update sidebar label."""
+        import socket
+        for port in range(5000, 5010):
+            with socket.socket() as s:
+                if s.connect_ex(("localhost", port)) != 0:
+                    self._web_port = port
+                    break
+        web_server.start(self._web_port)
+        self.lbl_local_url.setText(f"http://localhost:{self._web_port}")
+        self._log(f"Web server aktif → http://localhost:{self._web_port}")
+
+    def _toggle_tunnel(self):
+        if self._tunnel_url:
+            # Close existing tunnel
+            tunnel.close()
+            self._tunnel_url = None
+            self.btn_tunnel.setText("📡  Buka Tunnel Publik")
+            self.btn_tunnel.setObjectName("btn_start")
+            self.btn_tunnel.setStyleSheet(self.styleSheet())
+            self.lbl_tunnel_url.setText("(tunnel ditutup)")
+            self._log("Tunnel publik ditutup.")
+        else:
+            # Open new tunnel
+            self.btn_tunnel.setEnabled(False)
+            self.btn_tunnel.setText("⏳  Membuka tunnel …")
+            QApplication.processEvents()
+            token = self.le_ngrok_token.text().strip() or None
+            url = tunnel.open(port=self._web_port, authtoken=token)
+            self.btn_tunnel.setEnabled(True)
+            if url:
+                self._tunnel_url = url
+                self.btn_tunnel.setText("🔴  Tutup Tunnel")
+                self.btn_tunnel.setObjectName("btn_stop")
+                self.btn_tunnel.setStyleSheet(self.styleSheet())
+                self.lbl_tunnel_url.setText(url)
+                self._log(f"Tunnel publik aktif → {url}")
+                self._log("Menunggu 5 detik untuk DNS propagate, lalu browser akan terbuka…")
+                # Delay 5s for Cloudflare DNS to propagate before opening browser
+                QTimer.singleShot(5000, lambda: QDesktopServices.openUrl(QUrl(url)))
+            else:
+                self.btn_tunnel.setText("📡  Buka Tunnel Publik")
+                self.lbl_tunnel_url.setText(
+                    "Gagal membuka tunnel.\nSedang download cloudflared, coba lagi…")
+                self._log("Gagal membuka tunnel. Pastikan pyngrok terinstall.")
+
     def closeEvent(self, event):
         self._stop()
+        tunnel.close()
         if self._worker:
             self._worker.wait(3000)
         event.accept()
@@ -978,8 +1095,40 @@ class MainWindow(QMainWindow):
 #  ENTRY POINT
 # ─────────────────────────────────────────────
 if __name__ == "__main__":
-    app = QApplication(sys.argv)
-    app.setStyle("Fusion")
-    win = MainWindow()
-    win.show()
-    sys.exit(app.exec())
+    import traceback, logging
+    # Write all errors to a log file next to the binary so crashes are visible
+    log_path = Path(sys.executable).parent / "billet_error.log" \
+        if getattr(sys, "frozen", False) \
+        else Path("billet_error.log")
+    logging.basicConfig(
+        filename=str(log_path),
+        level=logging.DEBUG,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
+    try:
+        app = QApplication(sys.argv)
+        app.setStyle("Fusion")
+        # Explicitly add Qt plugin path (belt-and-suspenders for macOS bundle)
+        if getattr(sys, "frozen", False):
+            _meipass = getattr(sys, "_MEIPASS", "")
+            for _p in [
+                os.path.join(_meipass, "PySide6", "Qt", "plugins"),
+                os.path.join(os.path.dirname(sys.executable), "_internal", "PySide6", "Qt", "plugins"),
+            ]:
+                if os.path.isdir(_p):
+                    app.addLibraryPath(_p)
+                    break
+        win = MainWindow()
+        win.show()
+        sys.exit(app.exec())
+    except Exception:
+        msg = traceback.format_exc()
+        logging.critical("Unhandled exception:\n%s", msg)
+        # Also show a dialog so the user is not left with a blank screen
+        try:
+            from PySide6.QtWidgets import QApplication, QMessageBox
+            _app = QApplication.instance() or QApplication(sys.argv)
+            QMessageBox.critical(None, "Startup Error", msg[:800])
+        except Exception:
+            pass
+        raise
