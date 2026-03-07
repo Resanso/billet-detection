@@ -6,8 +6,8 @@ REM ─────────────────────────�
 
 echo =^> Checking virtual environment ...
 IF NOT EXIST venv (
-    echo =^> Trying to use Python 3.11 or 3.12 via Windows py launcher ...
-    py -3.11 -m venv venv 2>NUL || py -3.12 -m venv venv 2>NUL || py -3.10 -m venv venv 2>NUL || python -m venv venv
+    echo =^> Trying to use Windows AppData Python 3.11 ...
+    "%LOCALAPPDATA%\Programs\Python\Python311\python.exe" -m venv venv 2>NUL || py -3.11 -m venv venv 2>NUL || python -m venv venv
 )
 CALL venv\Scripts\activate.bat
 
