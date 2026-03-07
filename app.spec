@@ -118,7 +118,7 @@ exe = EXE(
     strip=False,
     upx=True,                       # compress binaries (requires UPX installed)
     console=True,                   # keep console ON to see errors (set False after stable)
-    icon="assets/icon.ico" if sys.platform == "win32" else None,
+    icon=None, # "assets/icon.ico" if sys.platform == "win32" else None,
 )
 
 coll = COLLECT(
