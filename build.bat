@@ -11,9 +11,9 @@ IF NOT EXIST venv (
 CALL venv\Scripts\activate.bat
 
 echo =^> Installing / upgrading dependencies ...
-pip install --upgrade pip
-pip install -r requirements.txt
-pip install pyinstaller
+pip install --upgrade pip || exit /B 1
+pip install -r requirements.txt || exit /B 1
+pip install pyinstaller || exit /B 1
 
 echo =^> Cleaning previous build ...
 IF EXIST build  RMDIR /S /Q build

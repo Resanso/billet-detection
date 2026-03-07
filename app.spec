@@ -41,6 +41,7 @@ binaries = pyside6_bins   + inference_bins  + sv_bins  + onnx_bins  + cv2_bins
 hidden_imports = (
     pyside6_hidden + inference_hidden + sv_hidden + onnx_hidden + cv2_hidden
     + [
+        "cv2",
         # PySide6 core modules used explicitly
         "PySide6.QtWidgets",
         "PySide6.QtCore",
